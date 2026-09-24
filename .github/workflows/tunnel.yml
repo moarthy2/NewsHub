@@ -121,12 +121,8 @@ jobs:
         run: |
           if [ -z "$DISCORD_BOT_TOKEN" ]; then
             echo "No DISCORD_BOT_TOKEN secret — publishing link instead."
-            cat <<EOF
-            ===== NewsHub temporary link =====
-            URL: ${TUNNEL_URL}
-            Runs for: ${{ github.event.inputs.duration_minutes || '10' }} minutes
-            Repo: https://github.com/moarthy2/NewsHub
-            EOF
+            printf '===== NewsHub temporary link =====\nURL: %s\nRuns for: %s minutes\nRepo: https://github.com/moarthy2/NewsHub\n' \
+              "${TUNNEL_URL}" "${{ github.event.inputs.duration_minutes || '10' }}"
             exit 0
           fi
           CHANNEL="1552490900964376577"
