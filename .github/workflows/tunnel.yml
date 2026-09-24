@@ -53,6 +53,8 @@ jobs:
           for i in $(seq 1 30); do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/health || true)
             if [ "$CODE" != "000" ] && [ -n "$CODE" ]; then
+              SERVER_READY=1
+              export SERVER_READY
               echo "SERVER_READY=1" >> "$GITHUB_ENV"
               echo "health check HTTP $CODE"
               break
@@ -81,6 +83,8 @@ jobs:
           for i in $(seq 1 30); do
             URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
             if [ -n "$URL" ]; then
+              TUNNEL_URL="$URL"
+              export TUNNEL_URL
               echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
               break
             fi
