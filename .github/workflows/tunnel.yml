@@ -1,0 +1,130 @@
+name: Temporary Cloudflare Tunnel
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Keepalive duration in minutes (max 355)'
+        required: false
+        default: '10'
+        type: string
+  push:
+    branches:
+      - R
+
+concurrency:
+  group: news-hub-tunnel
+  cancel-in-progress: false
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: npm-
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Prebuild (fetch fresh news)
+        run: npm run prebuild
+
+      - name: Build
+        run: npm run build
+
+      - name: Start Next.js server
+        env:
+          PORT: '3000'
+        run: |
+          nohup npm start > /tmp/news.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+              echo "SERVER_READY=1" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 2
+          done
+          if [ "${SERVER_READY:-0}" != "1" ]; then
+            echo "Server failed to start. Log tail:" >&2
+            tail -40 /tmp/news.log >&2
+            exit 1
+          fi
+          echo "Server ready on http://localhost:3000"
+
+      - name: Install cloudflared
+        run: |
+          curl -sSL -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          sudo install /tmp/cloudflared /usr/local/bin/cloudflared
+
+      - name: Open Cloudflare Quick Tunnel
+        run: |
+          nohup cloudflared tunnel --url http://localhost:3000 --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
+          for i in $(seq 1 30); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
+            if [ -n "$URL" ]; then
+              echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "${TUNNEL_URL:-}" ]; then
+            echo "No tunnel URL found. Log tail:" >&2
+            tail -40 /tmp/cloudflared.log >&2
+            exit 1
+          fi
+
+      - name: Verify tunnel from outside
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf --max-time 10 "${TUNNEL_URL}/api/health" > /dev/null 2>&1; then
+              echo "TUNNEL_VERIFIED=1" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 4
+          done
+          [ "${TUNNEL_VERIFIED:-0}" = "1" ] || { echo "Tunnel not reachable externally"; exit 1; }
+
+      - name: Publish link to Discord
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          if [ -z "$DISCORD_BOT_TOKEN" ]; then
+            echo "No DISCORD_BOT_TOKEN secret — publishing link instead."
+            cat <<EOF
+            ===== NewsHub temporary link =====
+            URL: ${TUNNEL_URL}
+            Runs for: ${{ github.event.inputs.duration_minutes || '10' }} minutes
+            Repo: https://github.com/moarthy2/NewsHub
+            EOF
+            exit 0
+          fi
+          CHANNEL="1552490900964376577"
+          MSG=$(printf '%s' "**NewsHub live (temporary)** 📰\nPublic URL: ${TUNNEL_URL}\nDuration: ${{ github.event.inputs.duration_minutes || '10' }} min — after that the runner stops and the link dies.\nRepo: https://github.com/moarthy2/NewsHub")
+          curl -s -X POST "https://discord.com/api/v10/channels/${CHANNEL}/messages" \
+            -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(printf '%s' "$MSG" | jq -Rs '{"content": .}')" || echo "Discord post failed"
+
+      - name: Keep runner alive
+        run: sleep $(( ${{ github.event.inputs.duration_minutes || 10 }} * 60 ))
+
+      - name: Send temporary link as fallback (always)
+        if: always()
+        run: |
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "Final state: $TUNNEL_URL"
+          fi
