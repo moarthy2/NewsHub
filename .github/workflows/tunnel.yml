@@ -47,11 +47,14 @@ jobs:
       - name: Start Next.js server
         env:
           PORT: '3000'
+          HOSTNAME: '127.0.0.1'
         run: |
           nohup npm start > /tmp/news.log 2>&1 &
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/health || true)
+            if [ "$CODE" != "000" ] && [ -n "$CODE" ]; then
               echo "SERVER_READY=1" >> "$GITHUB_ENV"
+              echo "health check HTTP $CODE"
               break
             fi
             sleep 2
@@ -59,9 +62,11 @@ jobs:
           if [ "${SERVER_READY:-0}" != "1" ]; then
             echo "Server failed to start. Log tail:" >&2
             tail -40 /tmp/news.log >&2
+            ss -tlnp 2>/dev/null | grep 3000 >&2 || true
+            curl -sv http://127.0.0.1:3000/api/health >&2 || true
             exit 1
           fi
-          echo "Server ready on http://localhost:3000"
+          echo "Server ready on http://127.0.0.1:3000"
 
       - name: Install cloudflared
         run: |
